@@ -1,0 +1,24 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Logs
+Logs/
+*.log
+*.txt
+
+# Environments
+.env/
+venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Extracted/temporary data & reports
+Extracted/
+Report/
+
+# Any other files you want git to ignore, add them here
