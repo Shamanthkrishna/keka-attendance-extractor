@@ -9,6 +9,8 @@ from tkinter import ttk
 from threading import Event
 import subprocess
 import sys
+import logging
+from logging.handlers import RotatingFileHandler
 
 log_box_ready = Event()
 
@@ -34,6 +36,15 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 
 # Define file paths
 LOG_FILE = os.path.join(LOG_DIR, f"attendance_log_{datetime.date.today()}.txt")
+
+# Set up logging with rotation (optional)
+handler = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=5)  # 2MB per file, 5 backups
+logging.basicConfig(
+    level=logging.INFO,  # Default level
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    handlers=[handler, logging.StreamHandler()]
+)
+
 EXTRACTED_FILE = os.path.join(EXTRACTED_DIR, "attendance_data.csv")
 TRANSFORMED_FILE = os.path.join(REPORT_DIR, "transformed_data.csv")
 
@@ -42,46 +53,41 @@ TRANSFORMED_FILE = os.path.join(REPORT_DIR, "transformed_data.csv")
 # ---------------------------------------
 
 # Logs a message with a timestamp to the log file and prints to console 
-def log_message(message):
-    timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-    final_message = f"{timestamp} {message}\n"
-
-    with open(LOG_FILE, "a") as log:
-        log.write(f"{timestamp} {message}\n")
-    
-    # Print to console
-    print(final_message.strip())
-
+def log_message(message, level="info"):
+    if level == "info":
+        logging.info(message)
+    elif level == "warning":
+        logging.warning(message)
+    elif level == "error":
+        logging.error(message)
+    elif level == "debug":
+        logging.debug(message)
+    else:
+        logging.info(message)
+    # Optionally, update the GUI log box as before
     try:
         log_box.configure(state='normal')
-        log_box.insert(tk.END, final_message)
+        log_box.insert(tk.END, f"{level.upper()}: {message}\n")
         log_box.configure(state='disabled')
         log_box.see(tk.END)
         log_box.update_idletasks()
-    except Exception as e:
+    except Exception:
         pass
 
 
-# ---------------------------------------
-# Open Report Folder
-# ---------------------------------------
-def open_report_folder():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    report_path = os.path.join(script_dir, 'report')
-
-    if not os.path.exists(report_path):
-        log_message("Report folder does not exist.")
-        return
-
+def open_file(filepath):
     try:
-        if sys.platform.startswith('darwin'):  # macOS
-            subprocess.call(['open', report_path])
-        elif os.name == 'nt':  # Windows
-            os.startfile(report_path)
-        elif os.name == 'posix':  # Linux
-            subprocess.call(['xdg-open', report_path])
+        if not os.path.exists(filepath):
+            log_message(f"File does not exist: {filepath}", level="warning")
+            return
+        if sys.platform.startswith('darwin'):
+            subprocess.call(['open', filepath])
+        elif os.name == 'nt':
+            os.startfile(filepath)
+        elif os.name == 'posix':
+            subprocess.call(['xdg-open', filepath])
     except Exception as e:
-        log_message(f"Failed to open report folder: {e}")
+        log_message(f"Failed to open file: {e}", level="error")
 
 # ---------------------------------------
 # Validate Token
@@ -95,13 +101,13 @@ def validate_token(token):
     try:
         response = requests.get(test_url, headers=headers)
         if response.status_code == 200:
-            log_message("Token validation successful.")
+            log_message("Token validation successful.", level="info")
             return True
         else:
-            log_message(f"Token validation failed. Status Code: {response.status_code}")
+            log_message(f"Token validation failed. Status Code: {response.status_code}", level="warning")
             return False
     except Exception as e:
-        log_message(f"Token validation error: {e}")
+        log_message(f"Token validation error: {e}", level="error")
         return False
 
 # ---------------------------------------
@@ -110,17 +116,17 @@ def validate_token(token):
 
 # Makes a GET request to the given URL using Bearer token for authorization
 def fetch_attendance_data(url, token):
-    log_message("Fetching Attendance Data")
+    log_message("Fetching Attendance Data", level="info")
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        log_message(f"Fetching data from: {url}")
+        log_message(f"Fetching data from: {url}", level="debug")
         response = requests.get(url, headers=headers)
-        log_message(f"Response Code: {response.status_code}")
+        log_message(f"Response Code: {response.status_code}", level="debug")
         response.raise_for_status()  # Raise error for HTTP codes 4xx or 5xx
-        log_message("Data fetched successfully")
+        log_message("Data fetched successfully", level="info")
         return response.json()
     except requests.exceptions.RequestException as e:
-        log_message(f"Error fetching data: {e}")
+        log_message(f"Error fetching data: {e}", level="error")
         return None
 
 # ---------------------------------------
@@ -143,18 +149,14 @@ def load_existing_data():
 
 # Parses and filters raw API data to extract relevant attendance records
 def extract_attendance_data(data, existing_records):
-    log_message("Extracting Attendance Data")
+    log_message("Extracting Attendance Data", level="info")
     extracted_data = []
     for record in data.get("data", []):
-        if record.get("dayType") == 0 and record.get("attendanceDayStatus") == 1:
+        if record.get("attendanceDayStatus") == 1:
             employee_id = str(record.get("employeeId"))
             attendance_date = record.get("attendanceDate")
-            # REMOVE this condition inside extract_attendance_data():
-            # if (employee_id, attendance_date[:10]) in existing_records:
-            #     continue
             in_time = record.get("firstLogOfTheDay", "0")
             out_time = record.get("lastLogOfTheDay", "0")
-
             extracted_data.append([employee_id, attendance_date, in_time, out_time])
     return extracted_data
 
@@ -165,9 +167,9 @@ def extract_attendance_data(data, existing_records):
 # Appends new records to CSV file. Writes header only if file is created newly.
 def save_to_csv(data, filename):
     if not data:
-        log_message("No new data to save.")
+        log_message("No new data to save.", level="warning")
         return
-    log_message(f"Saving data to {filename}")
+    log_message(f"Saving data to {filename}", level="info")
     new_df = pd.DataFrame(data, columns=["Employee ID", "Date", "Login Time", "Logout Time"])
 
     if os.path.exists(filename):
@@ -210,7 +212,7 @@ def get_last_six_months():
 
 # Transforms the raw attendance CSV into a readable report with formatted times, duration, etc.
 def transform_data():
-    log_message("Starting Transformation Process")
+    log_message("Starting Transformation Process", level="info")
     df = pd.read_csv(EXTRACTED_FILE)
 
     # Remove rows with missing login/logout values
@@ -248,8 +250,11 @@ def transform_data():
 
     # Save updated combined report
     combined_df.to_csv(TRANSFORMED_FILE, index=False)
-    log_message(f"Saving Transformed Data to {TRANSFORMED_FILE}")
-    log_message("Transformation Process Completed")
+    log_message(f"Saving Transformed Data to {TRANSFORMED_FILE}", level="info")
+    log_message("Transformation Process Completed", level="info")
+
+    # Auto-open the transformed CSV file
+    open_file(TRANSFORMED_FILE)
 
 # ---------------------------------------
 # Main Processing Logic
@@ -286,11 +291,11 @@ def run_script():
     if not token:
         messagebox.showerror("Error", "Please enter the Bearer Token")
         return
-    log_message("Validating token...")
+    log_message("Validating token...", level="info")
     if validate_token(token):
-        log_message("Starting attendance data extraction...")
+        log_message("Starting attendance data extraction...", level="info")
         main(token)
-        log_message("Process Completed!")
+        log_message("Process Completed!", level="info")
         messagebox.showinfo("Success", "Attendance data extraction completed successfully!")
     else:
         messagebox.showerror("Invalid Token", "The provided token is invalid or expired.")
@@ -340,6 +345,7 @@ def start_gui(disable_input=False):
     
 if __name__ == "__main__":
     start_gui()
+
 
 
     

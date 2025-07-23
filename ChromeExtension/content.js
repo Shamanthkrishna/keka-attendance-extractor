@@ -2,8 +2,6 @@
   const token = localStorage.getItem("access_token") || sessionStorage.getItem("access_token");
 
   if (token) {
-    console.log("Token found:", token);
-
     fetch("http://localhost:5000/extract", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -11,12 +9,25 @@
     })
       .then(res => res.json())
       .then(data => {
-        alert("Token sent to local script successfully!");
+        console.log("Server response:", data);
+        // Send a message to the background script with the report URL
+        chrome.runtime.sendMessage({
+          type: "SHOW_REPORT_NOTIFICATION",
+          reportUrl: data.report_url
+        });
       })
       .catch(err => {
-        alert("Error sending token: " + err);
+        chrome.runtime.sendMessage({
+          type: "SHOW_REPORT_NOTIFICATION",
+          reportUrl: null,
+          error: err.toString()
+        });
       });
   } else {
-    alert("Token not found in storage.");
+    chrome.runtime.sendMessage({
+      type: "SHOW_REPORT_NOTIFICATION",
+      reportUrl: null,
+      error: "Token not found in storage."
+    });
   }
 })();
