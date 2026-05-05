@@ -21,4 +21,7 @@ Thumbs.db
 Extracted/
 Report/
 
+# Token cache (contains sensitive Bearer token — never commit this)
+.token_cache.json
+
 # Any other files you want git to ignore, add them here
