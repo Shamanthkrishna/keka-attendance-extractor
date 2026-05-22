@@ -24,4 +24,7 @@ Report/
 # Token cache (contains sensitive Bearer token — never commit this)
 .token_cache.json
 
+# Playwright-managed Chrome profile (contains session cookies — never commit this)
+ChromeProfile/
+
 # Any other files you want git to ignore, add them here

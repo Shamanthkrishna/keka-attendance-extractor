@@ -1,15 +1,21 @@
 """
 setup_scheduler.py
 ------------------
-One-time setup script that registers two Windows Task Scheduler tasks:
+One-time setup script.
 
-  1. "KekaServerAutoStart"  — starts server.py at every user login (background).
-  2. "KekaAttendanceDaily"  — runs auto_extract.py every weekday at 6:30 PM.
+What it does:
+  1. Drops KekaServerAutoStart.bat into the Windows Startup folder
+     → server.py starts at every user login (no admin rights needed).
+  2. Creates Task Scheduler task "KekaServerOnWake"
+     → restarts server.py automatically when the PC wakes from sleep.
 
-Run once as a normal user (no admin rights needed for user-scoped tasks):
+The Chrome extension (background.js) handles daily token extraction at 18:30.
+No extra Task Scheduler jobs or special Chrome flags are required.
+
+Run once:
     python setup_scheduler.py
 
-To remove the tasks later:
+To undo everything:
     python setup_scheduler.py --remove
 """
 
@@ -19,12 +25,11 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
-PYTHON_EXE = sys.executable          # the Python that is running this script
+PYTHON_EXE = sys.executable
 SERVER_SCRIPT = BASE_DIR / "server.py"
-EXTRACT_SCRIPT = BASE_DIR / "auto_extract.py"
+SERVER_BAT = BASE_DIR / "start_server.bat"
 
-TASK_SERVER = "KekaServerAutoStart"
-TASK_EXTRACT = "KekaAttendanceDaily"
+TASK_WAKE = "KekaServerOnWake"
 
 
 def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -44,9 +49,10 @@ def create_server_startup_shortcut() -> None:
     Drop a .bat file into the user's Startup folder so the server starts
     at every login — no admin rights required.
     """
-    import shutil
-
-    startup_folder = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup_folder = (
+        Path(os.environ.get("APPDATA", ""))
+        / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    )
     startup_bat = startup_folder / "KekaServerAutoStart.bat"
 
     bat_content = (
@@ -60,59 +66,80 @@ def create_server_startup_shortcut() -> None:
     try:
         startup_bat.write_text(bat_content, encoding="utf-8")
         print(f"  Created: {startup_bat}")
-        print(f"  The server will start automatically at your next login.")
+        print(f"  The server will start automatically at every login.")
     except Exception as e:
         print(f"  ERROR: {e}")
 
 
-def create_extract_task(hour: int = 18, minute: int = 30) -> None:
-    """Run auto_extract.py every weekday at the given time (default 18:30)."""
-    time_str = f"{hour:02d}:{minute:02d}"
-    print(f"Creating task '{TASK_EXTRACT}' (daily extraction at {time_str} Mon-Fri)...")
+def create_server_wake_task() -> None:
+    """
+    Create a Task Scheduler task that restarts the Flask server whenever
+    the PC wakes from sleep (System event log, Power-Troubleshooter, Event ID 1).
+    No admin rights required — task runs as the current user.
+    """
+    # XPath filter: System event log, Microsoft-Windows-Power-Troubleshooter, EventID 1 = wake
+    event_query = (
+        r"*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]"
+    )
+    # The task action: run start_server.bat (kills stale instance, then starts fresh)
+    action = f'"{SERVER_BAT}"'
 
-    # schtasks /SC WEEKLY with /D MON,TUE,WED,THU,FRI
+    print(f"Creating task '{TASK_WAKE}' (restart server on wake from sleep)...")
     cmd = [
         "schtasks", "/Create", "/F",
-        "/TN", TASK_EXTRACT,
-        "/TR", f'"{PYTHON_EXE}" "{EXTRACT_SCRIPT}"',
-        "/SC", "WEEKLY",
-        "/D", "MON,TUE,WED,THU,FRI",
-        "/ST", time_str,
+        "/TN", TASK_WAKE,
+        "/TR", action,
+        "/SC", "ONEVENT",
+        "/EC", "System",
+        "/MO", event_query,
     ]
     result = run(cmd, check=False)
     if result.returncode == 0:
-        print(f"  Task '{TASK_EXTRACT}' created successfully.")
+        print(f"  Task '{TASK_WAKE}' created successfully.")
     else:
-        print(f"  ERROR creating '{TASK_EXTRACT}':\n  {result.stderr.strip()}")
+        print(f"  ERROR creating '{TASK_WAKE}':\n  {result.stderr.strip()}")
+        print(f"  You can add it manually in taskschd.msc: trigger = On event, System log,")
+        print(f"  Provider: Microsoft-Windows-Power-Troubleshooter, Event ID: 1")
 
 
 def main() -> None:
     if "--remove" in sys.argv:
-        print("Removing scheduled tasks...")
-        # Remove Startup folder shortcut
-        startup_folder = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-        startup_bat = startup_folder / "KekaServerAutoStart.bat"
-        if startup_bat.exists():
-            startup_bat.unlink()
-            print(f"  Removed: {startup_bat}")
-        else:
-            print(f"  Startup shortcut did not exist.")
-        delete_task(TASK_EXTRACT)
+        print("Removing Keka Attendance Extractor automation...")
+        startup_folder = (
+            Path(os.environ.get("APPDATA", ""))
+            / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        )
+        for fname in ("KekaServerAutoStart.bat", "KekaChrome.bat"):
+            p = startup_folder / fname
+            if p.exists():
+                p.unlink()
+                print(f"  Removed: {p}")
+            else:
+                print(f"  {fname} not found in Startup folder (skipping).")
+        delete_task(TASK_WAKE)
+        # Also clean up old tasks if they exist from previous setup
+        delete_task("KekaAttendanceDaily")
         return
 
-    print("Setting up Windows Task Scheduler tasks for Keka Attendance Extractor")
-    print(f"  Python: {PYTHON_EXE}")
-    print(f"  Server script: {SERVER_SCRIPT}")
-    print(f"  Extractor script: {EXTRACT_SCRIPT}")
+    print("Setting up Keka Attendance Extractor automation")
+    print(f"  Python   : {PYTHON_EXE}")
+    print(f"  Server   : {SERVER_SCRIPT}")
     print()
 
     create_server_startup_shortcut()
-    create_extract_task()
+    print()
+    create_server_wake_task()
 
     print()
-    print("Done. You can verify tasks in Task Scheduler (taskschd.msc).")
-    print("To run the extractor manually at any time:")
-    print(f'  python "{EXTRACT_SCRIPT}"')
+    print("Done!")
+    print()
+    print("Next steps:")
+    print("  1. Double-click start_server.bat to start the server right now.")
+    print("  2. In Chrome, go to chrome://extensions/ and load the ChromeExtension/ folder.")
+    print("  3. Open hrmstismo.keka.com and log in.")
+    print("  4. Click the extension icon to test — or wait for the 18:30 automatic trigger.")
+    print()
+    print("To undo: python setup_scheduler.py --remove")
 
 
 if __name__ == "__main__":

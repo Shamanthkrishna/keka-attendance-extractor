@@ -1,42 +1,56 @@
 # Keka Attendance Extractor
 
-Automatically extracts your daily attendance data from the Keka HRMS portal and saves it as a formatted CSV report — no manual token copying or browser extension clicks required.
+Automatically extracts your daily attendance data from the Keka HRMS portal and saves it as a formatted CSV report — no new browser window, no login required after first setup.
+
+---
+
+# Keka Attendance Extractor
+
+Automatically extracts your daily attendance data from the Keka HRMS portal and saves it as a formatted CSV report — no new browser window, no login required after first setup.
 
 ---
 
 ## How It Works
 
-```
-Windows Startup  →  server.py  (Flask server on port 5000, always running)
+### Primary path — Chrome Extension Alarm (recommended)
 
-Task Scheduler   →  auto_extract.py  (runs every weekday at 6:30 PM)
-                        │
-                        ├─ [Token cache valid?]  →  skip browser, use cached token
-                        │
-                        └─ [Token expired?]
-                                │
-                                ├─ Launch Chrome silently using your saved profile
-                                ├─ GAuth session still active → already logged in
-                                ├─ Extract access_token from localStorage
-                                ├─ Cache token with JWT expiry
-                                └─ Run pipeline → Extracted/attendance_data.csv
-                                                → Report/transformed_data.csv  (auto-opens)
+```
+Chrome Extension (background.js)
+    │  chrome.alarms fires every weekday at 18:30
+    │
+    ├─ Find open Keka tab (you are already logged in)
+    ├─ Inject content.js → read access_token from localStorage
+    ├─ POST token to Flask server on localhost:5000
+    └─ Flask server → main.py → attendance_data.csv + transformed_data.csv
 ```
 
-The Chrome extension (`ChromeExtension/`) is the **legacy approach** — it still works if you prefer manual extraction, but the automated pipeline above replaces the need for it entirely.
+The extension self-schedules — no Task Scheduler needed. The Flask server must be running (starts automatically at login via Windows Startup).
 
----
+### Secondary / manual path — CDP script
+
+```
+python auto_extract.py
+    │
+    ├─ [Token cache valid?]  →  done instantly, no browser needed
+    └─ [Token expired?]  →  connect to Chrome via --remote-debugging-port=9222
+                              read token from open Keka tab → cache → pipeline
+```
+
+Requires Chrome to be launched via `start_chrome.bat`.
+
+
 
 ## Project Structure
 
 ```
-├── auto_extract.py          # Main automation script (Playwright-based)
+├── auto_extract.py          # Main automation script (CDP-based, no new window)
 ├── main.py                  # Core pipeline: fetch → parse → save → transform
-├── server.py                # Flask server that receives tokens from the Chrome extension
-├── setup_scheduler.py       # One-time setup: registers Task Scheduler + Startup tasks
-├── start_server.bat         # Starts the Flask server (also placed in Windows Startup)
+├── server.py                # Flask server (for legacy Chrome extension)
+├── setup_scheduler.py       # One-time setup: Startup folder + Task Scheduler
+├── start_server.bat         # Starts Flask server (placed in Windows Startup)
+├── start_chrome.bat         # Launches Chrome with --remote-debugging-port=9222 (placed in Windows Startup)
 │
-├── ChromeExtension/         # Legacy Chrome extension (manual trigger)
+├── ChromeExtension/         # Legacy Chrome extension (manual trigger, still works)
 │   ├── manifest.json
 │   ├── background.js
 │   └── content.js
@@ -45,7 +59,7 @@ The Chrome extension (`ChromeExtension/`) is the **legacy approach** — it stil
 │   └── attendance_data.csv  # Raw attendance records (cumulative)
 │
 ├── Report/
-│   └── transformed_data.csv # Formatted report with working hours (auto-opens after extraction)
+│   └── transformed_data.csv # Formatted report with working hours (auto-opens)
 │
 └── Logs/
     └── attendance_log_YYYY-MM-DD.txt  # Daily rotating logs
@@ -57,7 +71,7 @@ The Chrome extension (`ChromeExtension/`) is the **legacy approach** — it stil
 
 - **Python 3.10+** (project uses 3.14)
 - **Google Chrome** installed
-- You must have logged into `hrmstismo.keka.com` via GAuth at least once in your default Chrome profile
+- Chrome must be running with `--remote-debugging-port=9222` — `start_chrome.bat` handles this automatically
 
 ---
 
@@ -70,63 +84,66 @@ pip install flask flask-cors waitress pandas requests playwright
 playwright install chromium
 ```
 
-### 2. Register automation tasks (no admin rights needed)
+### 2. Register the Flask server auto-start (no admin rights needed)
 
 ```powershell
 python setup_scheduler.py
 ```
 
-This does two things:
-- Drops `KekaServerAutoStart.bat` into your Windows **Startup folder** so `server.py` starts automatically at every login
-- Creates a **Task Scheduler** job (`KekaAttendanceDaily`) that runs `auto_extract.py` every weekday at 6:30 PM
+This places `KekaServerAutoStart.bat` in your Windows **Startup folder** so the Flask server starts at every login.
 
-### 3. Seed your Chrome session
+### 3. Start the Flask server now (for the current session)
 
-Open `https://hrmstismo.keka.com` in your normal Google Chrome and log in via **Sign in with Google (GAuth)**. This saves the session cookies to your Chrome profile so the automation can reuse them silently.
+Double-click `start_server.bat` (or run `python server.py`). It must be running for the extension to work.
 
-### 4. Run once manually to verify
+### 4. Load the Chrome extension
 
-```powershell
-python auto_extract.py
-```
+1. Go to `chrome://extensions/`
+2. Enable **Developer mode**
+3. Click **Load unpacked** → select the `ChromeExtension/` folder
+4. The extension is now active — it schedules itself automatically for 18:30 daily
 
-On success, `Report/transformed_data.csv` will open automatically.
+### 5. Open Keka and log in
 
----
+Go to `https://hrmstismo.keka.com` in Chrome and log in via GAuth as normal. Keep this tab open — the extension will find it at 18:30.
+
+### 6. Test immediately
+
+Click the extension icon while on the Keka page to trigger an extraction on demand. Check `Report/transformed_data.csv` for the result.
+
+
 
 ## Daily Usage (after setup)
 
-Nothing. The extractor runs itself every weekday at 6:30 PM.
+Nothing. The Chrome extension fires automatically every weekday at 18:30 and:
 
-- **Token still valid** → extraction completes in seconds with no browser visible
-- **Token expired** → Chrome opens visibly, you complete GAuth once (~10 seconds), Chrome closes, extraction continues automatically
-- **Report** → `Report/transformed_data.csv` opens after every successful run
+1. Finds your open Keka tab
+2. Reads the Bearer token from localStorage
+3. POSTs it to the Flask server
+4. The server runs the extraction pipeline
+
+**Requirements at 18:30:**
+- Chrome must be open with a Keka tab (you're already logged in to use Keka anyway)
+- Flask server must be running (auto-starts at login via Windows Startup)
 
 ---
 
 ## Manual Extraction (anytime)
 
+**Via extension button:** Click the extension icon while on the Keka page.
+
+**Via CLI (requires Chrome with --remote-debugging-port=9222):**
 ```powershell
 python auto_extract.py
 ```
 
 ---
 
-## Legacy: Chrome Extension (manual)
+## Legacy: Chrome Extension Manual Trigger
 
-If you want to trigger extraction manually from the browser:
+The extension icon always works as a manual trigger. Click it while on `hrmstismo.keka.com` to extract immediately without waiting for the 18:30 alarm.
 
-1. Ensure the Flask server is running: double-click `start_server.bat`
-2. Open `https://hrmstismo.keka.com` in Chrome (must be logged in)
-3. Load the extension in Chrome:
-   - Go to `chrome://extensions/`
-   - Enable **Developer mode**
-   - Click **Load unpacked** → select the `ChromeExtension/` folder
-4. Click the extension icon while on the Keka page
 
-The extension reads the Bearer token from localStorage and POSTs it to the local Flask server, which then runs the extraction pipeline.
-
----
 
 ## Removing the Automation
 
@@ -142,29 +159,31 @@ This deletes the Startup folder shortcut and the Task Scheduler job.
 
 | Symptom | Fix |
 |---|---|
-| `Token not found in localStorage` | Log into Keka manually in Chrome first, then rerun |
-| `Address already in use` on port 5000 | The updated `start_server.bat` kills stale instances automatically |
-| Playwright can't find Chrome | Ensure Google Chrome is installed; `channel="chrome"` in `auto_extract.py` requires the full Chrome, not just Chromium |
-| GAuth keeps expiring | Normal — Google OAuth sessions last a few weeks. Browser opens automatically when needed |
+| Extension doesn't trigger at 18:30 | Make sure the extension is loaded in Chrome and Chrome is open with a Keka tab |
+| `No Keka tab was found` notification | Open `hrmstismo.keka.com` in Chrome and log in — the extension will retry next trigger |
+| `Token not found in localStorage` | Refresh the Keka tab (session may have expired) and click the extension icon to retry |
+| `Address already in use` on port 5000 | `start_server.bat` kills stale instances automatically — double-click it to restart |
+| `Cannot reach Chrome on localhost:9222` | Only relevant for `auto_extract.py` CLI path. Close Chrome, run `start_chrome.bat`, open Keka, retry |
 | Report not updating | Check `Logs/attendance_log_YYYY-MM-DD.txt` for error details |
 
 ---
 
 ## Configuration
 
-Edit these constants at the top of `auto_extract.py` if needed:
+To change the daily trigger time, edit these constants at the top of `ChromeExtension/background.js`:
+
+```js
+const TRIGGER_HOUR = 18;    // 18 = 6 PM
+const TRIGGER_MINUTE = 30;
+```
+
+After editing, go to `chrome://extensions/`, click the refresh icon on the extension, then reload a Keka tab to re-register the alarm.
+
+For the CDP fallback (`auto_extract.py`), edit these constants in that file:
 
 | Constant | Default | Description |
 |---|---|---|
 | `KEKA_URL` | `https://hrmstismo.keka.com` | Your organisation's Keka URL |
 | `TOKEN_STORAGE_KEY` | `access_token` | localStorage key for the Bearer token |
-| `CHROME_USER_DATA` | `%LOCALAPPDATA%\Google\Chrome\User Data` | Chrome profile directory |
-| `CHROME_PROFILE` | `Default` | Profile folder name inside User Data |
+| `CDP_URL` | `http://localhost:9222` | CDP endpoint for the running Chrome instance |
 
-To change the daily extraction time, re-run:
-
-```powershell
-python setup_scheduler.py
-```
-
-And edit `create_extract_task(hour=18, minute=30)` in `setup_scheduler.py` before running.
